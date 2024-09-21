@@ -1,6 +1,7 @@
 import unittest
 import multiprocessing.shared_memory as shared_memory
 from tinygrad.helpers import CI
+from tinygrad.runtime.ops_shm import RawShmBuffer
 from tinygrad.tensor import Tensor, Device
 import numpy as np
 
@@ -11,7 +12,7 @@ class TestRawShmBuffer(unittest.TestCase):
     # copy to shm
     shm_name = (s := shared_memory.SharedMemory(create=True, size=t.nbytes())).name
     s.close()
-    t_shm = t.to(f"disk:shm:{shm_name}").realize()
+    t_shm = t.to(f"shm:{shm_name}").realize()
 
     # copy from shm
     t2 = t_shm.to(Device.DEFAULT).realize()
@@ -26,7 +27,7 @@ class TestRawShmBuffer(unittest.TestCase):
     # copy to shm
     shm_name = (s := shared_memory.SharedMemory(create=True, size=t.nbytes())).name
     s.close()
-    t_shm = t.to(f"disk:shm:{shm_name}").realize()
+    t_shm = t.to(f"shm:{shm_name}").realize()
 
     # copy from shm
     t2 = t_shm.to(Device.DEFAULT).realize()

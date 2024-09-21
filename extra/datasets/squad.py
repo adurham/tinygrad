@@ -3,12 +3,12 @@ import os
 from pathlib import Path
 from transformers import BertTokenizer
 import numpy as np
-from tinygrad.helpers import fetch
+from extra.utils import download_file
 
 BASEDIR = Path(__file__).parent / "squad"
 def init_dataset():
   os.makedirs(BASEDIR, exist_ok=True)
-  fetch("https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v1.1.json", BASEDIR / "dev-v1.1.json")
+  download_file("https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v1.1.json", BASEDIR / "dev-v1.1.json")
   with open(BASEDIR / "dev-v1.1.json") as f:
     data = json.load(f)["data"]
 

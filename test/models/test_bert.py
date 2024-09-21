@@ -2,6 +2,7 @@
 import unittest
 import numpy as np
 from tinygrad.tensor import Tensor
+from tinygrad.ops import Device
 import torch
 
 def get_question_samp(bsz, seq_len, vocab_size, seed):
@@ -22,7 +23,7 @@ def set_equal_weights(mdl, torch_mdl):
 
 class TestBert(unittest.TestCase):
   def test_questions(self):
-    from extra.models.bert import BertForQuestionAnswering
+    from models.bert import BertForQuestionAnswering
     from transformers import BertForQuestionAnswering as TorchBertForQuestionAnswering
     from transformers import BertConfig
 

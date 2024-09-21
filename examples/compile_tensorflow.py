@@ -2,15 +2,15 @@
 
 import os, sys
 os.environ["CLANG"] = '1'
-os.environ["JIT"] = '2'
+os.environ["GPU"] = '1'
 
 import numpy as np
 import subprocess
 import tensorflow as tf
 import tf2onnx
+from examples.compile_efficientnet import compile_net
 from extra.onnx import get_run_onnx
 from tinygrad.tensor import Tensor
-from extra.export_model import export_model_clang, compile_net, jit_model
 
 def get_uncompiled_model2(dataset_size=32, output_size=4):
   inputs = tf.keras.Input(shape=(dataset_size,), name="inputs")
@@ -21,39 +21,43 @@ def get_uncompiled_model2(dataset_size=32, output_size=4):
   model = tf.keras.Model(inputs=inputs, outputs=outputs)
   return model
 
-class TinyOnnx:
-  def __init__(self, keras_model):
-    input_signature = [tf.TensorSpec([1,32], tf.float32, name='x')]
-    onnx_model, _ = tf2onnx.convert.from_keras(keras_model, input_signature, opset=13)
-    self.run_onnx = get_run_onnx(onnx_model)
-
-  def forward(self, x):
-    return self.run_onnx({"x": x}, debug=False)['predictions']
+def create_onnx_model(keras_model):
+  input_signature = [tf.TensorSpec([1,32], tf.float32, name='x')]
+  onnx_model, _ = tf2onnx.convert.from_keras(keras_model, input_signature, opset=13)
+  return onnx_model
 
 def compile_onnx_model(onnx_model):
-  tinyonnx = TinyOnnx(onnx_model)
+  run_onnx = get_run_onnx(onnx_model)
+
+  from tinygrad.jit import TinyJit
+  @TinyJit
+  def run(x): return run_onnx({"x": x}, debug=False)['predictions'].realize()
+
   the_input = Tensor.randn(1,32)
-
-  run, special_names = jit_model(tinyonnx, the_input)
-
-  functions, statements, bufs, bufs_to_save = compile_net(run, special_names)
-  prg = export_model_clang(functions, statements, bufs, {}, ["input0"], ["output0"])
-
   the_output = run(the_input)
-  cprog = ["#include <string.h>", "#include <stdio.h>", "#include <stdlib.h>"]
-  cprog.append(prg)
+  the_output = run(the_input)
+
+  special_names = {id(the_input.lazydata.realized.cl): "input", id(the_output.lazydata.realized.cl): "outputs"}
+  cprog, statements, bufs, bufs_to_save = compile_net(run, special_names)
+  cprog = ["#include <string.h>", "#include <stdio.h>", "#include <stdlib.h>"] + cprog
+
+  # buffers (all except input)
+  cprog += [f"float {x[0]}[{x[1]}];" for x in bufs.values() if x[0] != "input"]
 
   # weights
   cprog.append("void initialize(float *weights) {")
   weights = bytes()
   for name,cl in bufs_to_save.items():
-    cprog.append(f"memcpy({name}, weights + {len(weights)//4}, {len(cl._buf)*4});")
-    weights += bytes(cl._buf)
+    cprog.append(f"memcpy({name}, weights + {len(weights)//4}, {len(cl)});")
+    weights += bytes(memoryview(cl)[0:len(cl)//4])
   cprog.append("}")
 
   # write the weights to disk
   with open("/tmp/tf_weights", "wb") as f:
     f.write(weights)
+
+  # the net
+  cprog += ["float *infer(float *input) {"] + statements + ["return outputs;", "}"]
 
   # test program
   cprog.append(f"""int main(int argc, char *argv[]) {{
@@ -68,9 +72,8 @@ def compile_onnx_model(onnx_model):
 
     // test run
     float input[32];
-    float outputs[4];
     for (int i = 0; i < 32; i++) scanf("%f", &input[i]);
-    net(input, outputs);
+    float *outputs = infer(input);
     printf("%f %f %f %f\\n", outputs[0], outputs[1], outputs[2], outputs[3]);
   }}""")
 
@@ -81,7 +84,7 @@ def compile_onnx_model(onnx_model):
   # add test weights
   subprocess.check_output(['clang', '-O2', '-lm', '-fPIC', '-x', 'c', '-', '-o', "/tmp/tf_test"], input=prg.encode('utf-8'))
 
-  tinygrad_output = the_output[0].numpy()[0].tolist()
+  tinygrad_output = [x for x in the_output.numpy()[0]]
   print("tinygrad:", tinygrad_output, file=sys.stderr)
 
   c_input = ' '.join(["%f" % x for x in the_input[0].numpy()])+"\n"
@@ -93,7 +96,8 @@ def compile_onnx_model(onnx_model):
 
 if __name__ == "__main__":
   keras_model = get_uncompiled_model2()
-  test_input, test_output = compile_onnx_model(keras_model)
+  onnx_model = create_onnx_model(keras_model)
+  test_input, test_output = compile_onnx_model(onnx_model)
   tf_output = keras_model(test_input).numpy()[0]
   print("keras:   ", tf_output, file=sys.stderr)
   np.testing.assert_allclose(tf_output, test_output, atol=1e-5, rtol=1e-5)

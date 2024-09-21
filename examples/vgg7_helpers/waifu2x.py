@@ -4,7 +4,8 @@
 import numpy
 from tinygrad.tensor import Tensor
 from PIL import Image
-from tinygrad.helpers import fetch
+from pathlib import Path
+from extra.utils import download_file
 
 # File Formats
 
@@ -121,8 +122,13 @@ class Vgg7:
     """
     Downloads a nagadomi/waifu2x JSON weight file and loads it.
     """
+    fn = Path(__file__).parents[2] / ("weights/vgg_7_" + intent + "_" + subtype + "_model.json")
+    download_file("https://github.com/nagadomi/waifu2x/raw/master/models/vgg_7/" + intent + "/" + subtype + "_model.json", fn)
+
     import json
-    data = json.loads(fetch("https://github.com/nagadomi/waifu2x/raw/master/models/vgg_7/" + intent + "/" + subtype + "_model.json").read_bytes())
+    with open(fn, "rb") as f:
+      data = json.load(f)
+
     self.load_waifu2x_json(data)
 
   def load_waifu2x_json(self, data: list):

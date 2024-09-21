@@ -1,12 +1,14 @@
 #!/usr/bin/env python
 import unittest
 import numpy as np
-from tinygrad import Tensor, Device
-from tinygrad.helpers import CI
 from tinygrad.nn.state import get_parameters
+from tinygrad.tensor import Tensor, Device
 from tinygrad.nn import optim, BatchNorm2d
 from extra.training import train, evaluate
 from extra.datasets import fetch_mnist
+import pytest
+
+pytestmark = [pytest.mark.exclude_gpu, pytest.mark.exclude_clang]
 
 # load the mnist dataset
 X_train, Y_train, X_test, Y_test = fetch_mnist()
@@ -21,7 +23,7 @@ class TinyBobNet:
     return get_parameters(self)
 
   def forward(self, x):
-    return x.dot(self.l1).relu().dot(self.l2)
+    return x.dot(self.l1).relu().dot(self.l2).log_softmax()
 
 # create a model with a conv layer
 class TinyConvNet:
@@ -47,9 +49,8 @@ class TinyConvNet:
     x = self.bn1(x.conv2d(self.c1)).relu().max_pool2d()
     x = self.bn2(x.conv2d(self.c2)).relu().max_pool2d()
     x = x.reshape(shape=[x.shape[0], -1])
-    return x.dot(self.l1)
+    return x.dot(self.l1).log_softmax()
 
-@unittest.skipIf(CI and Device.DEFAULT == "CLANG", "slow")
 class TestMNIST(unittest.TestCase):
   def test_sgd_onestep(self):
     np.random.seed(1337)

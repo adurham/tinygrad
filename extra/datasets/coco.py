@@ -2,7 +2,7 @@ import json
 import pathlib
 import zipfile
 import numpy as np
-from tinygrad.helpers import fetch
+from extra.utils import download_file
 import pycocotools._mask as _mask
 from examples.mask_rcnn import Masker
 from pycocotools.coco import COCO
@@ -19,14 +19,16 @@ def create_dict(key_row, val_row, rows): return {row[key_row]:row[val_row] for r
 
 
 if not pathlib.Path(BASEDIR/'val2017').is_dir():
-  fn = fetch('http://images.cocodataset.org/zips/val2017.zip')
+  fn = BASEDIR/'val2017.zip'
+  download_file('http://images.cocodataset.org/zips/val2017.zip',fn)
   with zipfile.ZipFile(fn, 'r') as zip_ref:
     zip_ref.extractall(BASEDIR)
   fn.unlink()
 
 
 if not pathlib.Path(BASEDIR/'annotations').is_dir():
-  fn = fetch('http://images.cocodataset.org/annotations/annotations_trainval2017.zip')
+  fn = BASEDIR/'annotations_trainval2017.zip'
+  download_file('http://images.cocodataset.org/annotations/annotations_trainval2017.zip',fn)
   with zipfile.ZipFile(fn, 'r') as zip_ref:
     zip_ref.extractall(BASEDIR)
   fn.unlink()

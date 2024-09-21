@@ -4,13 +4,16 @@ import numpy as np
 from tinygrad.nn.state import get_parameters
 from tinygrad.nn import optim
 from tinygrad.tensor import Device
-from tinygrad.helpers import getenv, CI
+from tinygrad.helpers import getenv
 from extra.training import train
-from extra.models.convnext import ConvNeXt
-from extra.models.efficientnet import EfficientNet
-from extra.models.transformer import Transformer
-from extra.models.vit import ViT
-from extra.models.resnet import ResNet18
+from models.convnext import ConvNeXt
+from models.efficientnet import EfficientNet
+from models.transformer import Transformer
+from models.vit import ViT
+from models.resnet import ResNet18
+import pytest
+
+pytestmark = [pytest.mark.exclude_gpu, pytest.mark.exclude_clang]
 
 BS = getenv("BS", 2)
 
@@ -39,7 +42,6 @@ class TestTrain(unittest.TestCase):
     train_one_step(model,X,Y)
     check_gc()
 
-  @unittest.skipIf(CI, "slow")
   def test_efficientnet(self):
     model = EfficientNet(0)
     X = np.zeros((BS,3,224,224), dtype=np.float32)
@@ -47,8 +49,7 @@ class TestTrain(unittest.TestCase):
     train_one_step(model,X,Y)
     check_gc()
 
-  @unittest.skipIf(CI, "slow")
-  @unittest.skipIf(Device.DEFAULT in ["METAL", "WEBGPU"], "too many buffers for webgpu and metal")
+  @unittest.skipIf(Device.DEFAULT == "WEBGPU", "too many buffers for webgpu")
   def test_vit(self):
     model = ViT()
     X = np.zeros((BS,3,224,224), dtype=np.float32)
@@ -65,7 +66,6 @@ class TestTrain(unittest.TestCase):
     train_one_step(model,X,Y)
     check_gc()
 
-  @unittest.skipIf(CI, "slow")
   def test_resnet(self):
     X = np.zeros((BS, 3, 224, 224), dtype=np.float32)
     Y = np.zeros((BS), dtype=np.int32)

@@ -4,10 +4,9 @@ import time
 import sys
 np.set_printoptions(linewidth=160)
 np.set_printoptions(linewidth=1000, threshold=10000000000, suppress=False)
-from tinygrad.runtime.ops_llvm import LLVMDevice, LLVMProgram, LLVMCompiler
+from tinygrad.runtime.ops_llvm import LLVM, LLVMBuffer, int_const
 from llvmlite import ir  # type: ignore
-from tinygrad.helpers import flat_mv
-from tinygrad.device import MallocAllocator
+
 
 # https://github.com/corsix/amx/blob/main/Instructions.md
 # 12 lines for AMX support
@@ -25,31 +24,34 @@ class AMX:
   mac16, fma16, fms16 = partialmethod(op_gpr, 14), partialmethod(op_gpr, 15), partialmethod(op_gpr, 16)
   vecint, vecfp, matint, matfp, genlut = partialmethod(op_gpr, 18), partialmethod(op_gpr, 19), partialmethod(op_gpr, 20), partialmethod(op_gpr, 21), partialmethod(op_gpr, 22)
 
-def int_const(x): return ir.Constant(ir.IntType(64), x)
-
 
 N = 4096
-# N = 1024
-# N = 64
+#N = 1024
+#N = 64
 
-BW = N*N*4
+#an = np.arange(N*N).reshape(N, N) - 43*64
+#bn = np.arange(N*N).reshape(N, N)
+#an = np.ones((N, N)).astype(np.float32)
+#bn = np.ones((N, N)).astype(np.float32)
 
 # matrix is 64M, max load bandwidth is 57 GB/s
 # cache line looks like 256 bytes (64 floats)
 
-na = np.zeros((256), dtype=np.float32)
-# na = np.zeros((N, N), dtype=np.float32)
-nb = np.random.randn(N, N).astype(np.float32)
-nc = np.random.randn(N, N).astype(np.float32)
+an = np.random.randn(N, N)
+bn = np.random.randn(N, N)
+an = an.astype(np.float32)
+bn = bn.astype(np.float32)
 
-ns = nb.reshape(-1, 32).sum(axis=0)
+sn = an.reshape(-1, 32).sum(axis=0)
 
-a = MallocAllocator.alloc(na.size * np.dtype(np.float32).itemsize)
-b = MallocAllocator.alloc(nb.size * np.dtype(np.float32).itemsize)
-c = MallocAllocator.alloc(nc.size * np.dtype(np.float32).itemsize)
 
-MallocAllocator.copyin(b, flat_mv(nb.data))
-MallocAllocator.copyin(c, flat_mv(nc.data))
+cn = (an.T @ bn).T
+
+a = LLVMBuffer.fromCPU(an)
+b = LLVMBuffer.fromCPU(bn)
+#c = LLVMBuffer.fromCPU(np.zeros((N, N)))
+c = LLVMBuffer.fromCPU(np.zeros(256))
+bufs = [c,a,b]
 
 module = ir.Module(name=__file__)
 func = ir.Function(module, ir.FunctionType(ir.IntType(64), [ir.FloatType().as_pointer()]*3), name='exec')
@@ -94,8 +96,7 @@ loop_1.branch(loop_1_exit._block)
 loop_1_exit.cbranch(loop_1_exit.icmp_unsigned("==", yp, int_const(N*N)), exit._block, loop_1._block)
 exit.ret(int_const(0))
 
-device = LLVMDevice("llvm")
-prog = LLVMProgram(device, "exec", LLVMCompiler(device).compile(str(module)))
+cfunc = LLVM().exec(module, bufs, N**2)
 
 """
 loop_1 = ir.IRBuilder(func.append_basic_block(name="loop_y"))
@@ -161,20 +162,27 @@ loop_2_exit.cbranch(loop_2_exit.icmp_unsigned("==", xp, int_const(N)), loop_1_ex
 loop_1_exit.cbranch(loop_1_exit.icmp_unsigned("==", yp, int_const(N)), exit._block, loop_1._block)
 exit.ret(int_const(0))
 
-device = LLVMDevice("llvm")
-prog = LLVMProgram(device, "exec", LLVMCompiler(device).compile(str(module)))
+cfunc = LLVM().exec(module, bufs, N**3 * 2)
 """
 
-def timeit(fxn):
-  st = time.perf_counter()
-  et = fxn()
-  return time.perf_counter() - st
 
-tm = min([timeit(lambda: prog(a, b, c, N**2)) for _ in range(20)])
-MallocAllocator.copyout(flat_mv(na.data), a)
-print(f"{N*N:10d} {tm*1e6:9.2f} us, {BW*1e-9/tm:.2f} GB/s")
+times = []
+for i in range(50):
+  st = time.monotonic()
+  cfunc(*[x._buf for x in bufs])
+  et = time.monotonic() - st
+  times.append(et)
 
-np.testing.assert_allclose(na[:ns.shape[0]], ns, atol=1e-4, rtol=1e-4)
+print(f"{min(times)*1000:.2f} ms min time, {np.median(times)*1000:.2f} ms median time")
+print("%.2f GB/s" % ((N*N*4*1e-9)/min(times)))
 
-# comp = (nb.T @ nc).T
-# np.testing.assert_allclose(na, comp, atol=1e-4, rtol=1e-5)
+print(c.toCPU().astype(np.int64)[:sn.shape[0]])
+print(sn.astype(np.int64))
+
+np.testing.assert_allclose(c.toCPU()[:sn.shape[0]], sn, atol=1e-4, rtol=1e-4)
+
+"""
+print(cn.astype(np.int64))
+np.testing.assert_allclose(c.toCPU(), cn, atol=1e-4, rtol=1e-5)
+"""
+

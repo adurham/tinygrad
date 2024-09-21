@@ -1,8 +1,7 @@
 import sys, sqlite3, pickle
-from tinygrad.helpers import CACHEDB
 
 if __name__ == "__main__":
-  fn = sys.argv[1] if len(sys.argv) > 1 else CACHEDB
+  fn = sys.argv[1] if len(sys.argv) > 1 else "/tmp/tinygrad_cache"
   conn = sqlite3.connect(fn)
   cur = conn.cursor()
   cur.execute("SELECT name FROM sqlite_master WHERE type='table'")

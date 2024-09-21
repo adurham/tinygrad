@@ -9,9 +9,15 @@ torch.set_num_threads(1)
 import time
 import numpy as np
 np.set_printoptions(linewidth=160)
-from tinygrad import Tensor, Device, GlobalCounters, TinyJit
+from tinygrad.ops import Device
+from tinygrad.helpers import GlobalCounters
+from tinygrad.tensor import Tensor
 from tinygrad.nn import Conv2d
-from tinygrad.helpers import colorize_float, getenv, CI
+from tinygrad.helpers import colored, getenv, CI
+from tinygrad.jit import TinyJit
+import pytest
+
+pytestmark = [pytest.mark.exclude_cuda, pytest.mark.exclude_gpu, pytest.mark.exclude_clang]
 
 IN_CHANS = [int(x) for x in getenv("IN_CHANS", "4,16,64").split(",")]
 
@@ -19,12 +25,21 @@ torch_dt = torch.float16 if getenv("HALF", 0) else torch.float32
 torch_device = torch.device('mps' if getenv("MPS", 0) else ('cuda' if getenv("TORCHCUDA", 0) else 'cpu'))
 if str(torch_device) == "mps":
   import torch.mps
-  def sync(): torch.mps.synchronize()
+  sync = lambda: torch.mps.synchronize()
 elif str(torch_device) == "cuda":
   import torch.cuda
-  def sync(): torch.cuda.synchronize()
+  sync = lambda: torch.cuda.synchronize()
 else:
-  def sync(): pass
+  sync = lambda: None
+
+def colorize_float(x):
+  ret = f"{x:7.2f}x"
+  if x < 0.75:
+    return colored(ret, 'green')
+  elif x > 1.15:
+    return colored(ret, 'red')
+  else:
+    return colored(ret, 'yellow')
 
 save_ops, save_mem = 0, 0
 CNT = getenv("CNT", 8)
@@ -69,7 +84,7 @@ def helper_test_generic_square(name, N, f1, f2, onearg=False):
   tiny_a = Tensor(torch_a.cpu().numpy())
   tiny_b = Tensor(torch_b.cpu().numpy()) if not onearg else None
 
-  helper_test_generic(f"{name:30s} {N:5d}x{N:5d}", f1, (torch_a, torch_b), TinyJit(f2), (tiny_a, tiny_b))
+  helper_test_generic(f"{name:30s} {N:5d}x{N:5d}", f1, (torch_a, torch_b), TinyJit(lambda a,b:f2(a,b).realize()), (tiny_a, tiny_b))
 
 def helper_test_matvec(name, N, M):
   torch.manual_seed(0)
@@ -79,7 +94,7 @@ def helper_test_matvec(name, N, M):
   tiny_a = Tensor(torch_a.cpu().numpy())
   tiny_b = Tensor(torch_b.cpu().numpy())
 
-  helper_test_generic(f"{name:30s} {N:5d}x{M:5d}", lambda a,b: a@b, (torch_a, torch_b), TinyJit(lambda a,b:a@b), (tiny_a, tiny_b))
+  helper_test_generic(f"{name:30s} {N:5d}x{M:5d}", lambda a,b: a@b, (torch_a, torch_b), TinyJit(lambda a,b:(a@b).realize()), (tiny_a, tiny_b))
 
 prefix = None
 def helper_test_generic(name, f1, f1_args, f2, f2_args):
@@ -91,7 +106,7 @@ def helper_test_generic(name, f1, f1_args, f2, f2_args):
   desc = "faster" if et_torch > et_tinygrad else "slower"
   flops = save_ops*1e-6
   mem = save_mem*1e-6
-  print(("\r" if not CI else "")+f"{name:42s} {et_torch:7.2f} ms ({flops/et_torch:8.2f} GFLOPS {mem/et_torch:8.2f} GB/s) in torch, {et_tinygrad:7.2f} ms ({flops/et_tinygrad:8.2f} GFLOPS {mem/et_tinygrad:8.2f} GB/s) in tinygrad, {colorize_float(et_tinygrad/et_torch)} {desc} {flops:10.2f} MOPS {mem:8.2f} MB")  # noqa: E501
+  print(("\r" if not CI else "")+f"{name:42s} {et_torch:7.2f} ms ({flops/et_torch:8.2f} GFLOPS {mem/et_torch:8.2f} GB/s) in torch, {et_tinygrad:7.2f} ms ({flops/et_tinygrad:8.2f} GFLOPS {mem/et_tinygrad:8.2f} GB/s) in tinygrad, {colorize_float(et_tinygrad/et_torch)} {desc} {flops:10.2f} MOPS {mem:8.2f} MB")
   np.testing.assert_allclose(val_tinygrad, val_torch, atol=1e-3, rtol=1e-3)
 
 def helper_test_conv(bs, in_chans, out_chans, kernel_size, img_size_y, img_size_x):
@@ -108,7 +123,6 @@ def helper_test_conv(bs, in_chans, out_chans, kernel_size, img_size_y, img_size_
   helper_test_generic(f"conv bs:{bs:3d} chans:{in_chans:3d} -> {out_chans:3d} k:{kernel_size}", f1, (torch_dat,), TinyJit(f2), (tiny_dat,))
 
 @unittest.skipIf(getenv("BIG") == 0, "no big tests")
-@unittest.skipIf(getenv("MOCKGPU"), "no MOCKGPUs")
 class TestBigSpeed(unittest.TestCase):
   def test_add(self):
     def f(a, b): return a+b
@@ -129,7 +143,6 @@ class TestBigSpeed(unittest.TestCase):
   def test_matvec_16384_4096(self): helper_test_matvec('matvec_16384_4096', 16384, 4096)
 
 @unittest.skipIf(getenv("BIG") == 1, "only big tests")
-@unittest.skipIf(getenv("MOCKGPU"), "no MOCKGPUs")
 class TestSpeed(unittest.TestCase):
   def test_sub(self):
     def f(a, b): return a-b

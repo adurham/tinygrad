@@ -1,7 +1,6 @@
-import gzip, unittest
-from PIL import Image
-from tinygrad.helpers import Context, ContextVar
-from tinygrad.helpers import merge_dicts, strip_parens, prod, round_up, fetch, fully_flatten, from_mv, to_mv, get_contraction, get_shape
+import unittest
+import numpy as np
+from tinygrad.helpers import Context, ContextVar, DType, dtypes, merge_dicts, strip_parens, prod
 from tinygrad.shape.symbolic import Variable, NumNode
 
 VARIABLE = ContextVar("VARIABLE", 0)
@@ -121,6 +120,12 @@ class TestMergeDicts(unittest.TestCase):
     with self.assertRaises(AssertionError):
       merge_dicts([a, d])
 
+class TestDtypes(unittest.TestCase):
+  def test_dtypes_fields(self):
+    fields = dtypes.fields()
+    self.assertTrue(all(isinstance(value, DType) for value in fields.values()))
+    self.assertTrue(all(issubclass(value.np, np.generic) for value in fields.values() if value.np is not None))
+
 class TestStripParens(unittest.TestCase):
   def test_simple(self): self.assertEqual("1+2", strip_parens("(1+2)"))
   def test_nested(self): self.assertEqual("1+(2+3)", strip_parens("(1+(2+3))"))
@@ -132,150 +137,6 @@ class TestProd(unittest.TestCase):
   def test_variable(self): self.assertEqual("(a*12)", prod((Variable("a", 1, 5), 3, 4)).render())
   def test_variable_order(self): self.assertEqual("(a*12)", prod((3, 4, Variable("a", 1, 5))).render())
   def test_num_nodes(self): self.assertEqual(NumNode(6), prod((NumNode(2), NumNode(3))))
-
-class TestRoundUp(unittest.TestCase):
-  def test_round_up(self):
-    self.assertEqual(round_up(-3,4), 0)
-    self.assertEqual(round_up(-4,4), -4)
-    self.assertEqual(round_up(6,4), 8)
-    self.assertEqual(round_up(8,4), 8)
-    self.assertEqual(round_up(232, 24984), 24984)
-    self.assertEqual(round_up(24984, 232), 25056)
-
-@unittest.skip("no fetch tests because they need internet")
-class TestFetch(unittest.TestCase):
-  def test_fetch_bad_http(self):
-    self.assertRaises(Exception, fetch, 'http://www.google.com/404', allow_caching=False)
-
-  def test_fetch_small(self):
-    assert (len(fetch('https://google.com', allow_caching=False).read_bytes())>0)
-
-  def test_fetch_img(self):
-    img = fetch("https://avatars.githubusercontent.com/u/132956020", allow_caching=False)
-    with Image.open(img) as pimg:
-      assert pimg.size == (77, 77), pimg.size
-
-  def test_fetch_subdir(self):
-    img = fetch("https://avatars.githubusercontent.com/u/132956020", allow_caching=False, subdir="images")
-    with Image.open(img) as pimg:
-      assert pimg.size == (77, 77), pimg.size
-    assert img.parent.name == "images"
-
-  def test_fetch_gunzip_valid(self):
-    # compare fetch(gunzip=True) to fetch(gunzip=False) plus decompressing afterwards
-    gzip_url: str = 'https://ftp.gnu.org/gnu/gzip/gzip-1.13.tar.gz'
-    fp_gz = fetch(gzip_url, gunzip=True)
-    fp_no_gz = fetch(gzip_url, gunzip=False)
-    with open(fp_gz, 'rb') as f: content_gz = f.read()
-    with open(fp_no_gz, 'rb') as f: content_no_gz = gzip.decompress(f.read())
-    assert fp_gz.stat().st_size > fp_no_gz.stat().st_size
-    assert isinstance(content_gz, bytes) and isinstance(content_no_gz, bytes)
-    assert len(content_gz) == len(content_no_gz)
-    assert content_gz == content_no_gz
-
-  def test_fetch_gunzip_invalid(self):
-    # given a non-gzipped file, fetch(gunzip=True) fails
-    no_gzip_url: str = 'https://ftp.gnu.org/gnu/gzip/gzip-1.13.zip'
-    with self.assertRaises(gzip.BadGzipFile):
-      fetch(no_gzip_url, gunzip=True)
-
-class TestFullyFlatten(unittest.TestCase):
-  def test_fully_flatten(self):
-    self.assertEqual(fully_flatten([[1, 3], [1, 2]]), [1, 3, 1, 2])
-    self.assertEqual(fully_flatten(((1, 3), (1, 2))), [1, 3, 1, 2])
-    self.assertEqual(fully_flatten([[[1], [3]], [[1], [2]]]), [1, 3, 1, 2])
-    self.assertEqual(fully_flatten([[[[1], 2], 3], 4]), [1, 2, 3, 4])
-    self.assertEqual(fully_flatten([[1, 2, [3, 4]], [5, 6], 7]), [1, 2, 3, 4, 5, 6, 7])
-    self.assertEqual(fully_flatten([[1, "ab"], [True, None], [3.14, [5, "b"]]]), [1, "ab", True, None, 3.14, 5, "b"])
-
-class TestMemoryview(unittest.TestCase):
-  def test_from_mv_to_mv(self):
-    base = memoryview(bytearray(b"\x11\x22\x33"*40))
-    ct = from_mv(base)
-    mv = to_mv(ct, len(base))
-    mv[0] = 2
-    assert base[0] == 2
-
-class TestGetContraction(unittest.TestCase):
-  def test_contraction(self):
-    r = get_contraction((1,2,3,4), (2,3,4))
-    self.assertEqual(r, [[0, 1], [2], [3]])
-
-    r = get_contraction((2,1,3,4), (2,3,4))
-    self.assertEqual(r, [[0], [1, 2], [3]])
-
-    r = get_contraction((1,2,3,1,4), (1,2,3,4))
-    self.assertEqual(r, [[], [0, 1], [2], [3, 4]])
-
-    r = get_contraction((1,2,3,1,4,1,1), (2,3,4))
-    self.assertEqual(r, [[0, 1], [2], [3, 4, 5, 6]])
-
-    r = get_contraction((1,2,3,4), (1,2,3*4))
-    self.assertEqual(r, [[], [0, 1], [2, 3]])
-
-    r = get_contraction((1,2,3,4), (2,1,3,4))
-    self.assertEqual(r, [[0, 1], [], [2], [3]])
-
-    r = get_contraction((1,2,3,4), (1,1,2*3*4,1))
-    self.assertEqual(r, [[], [], [0,1,2,3], []])
-
-    r = get_contraction((2,1,3,4), (1,2,3,4))
-    self.assertEqual(r, [[], [0], [1, 2], [3]])
-
-    r = get_contraction((1,2,3,4), (2*3*4,1,1,1))
-    self.assertEqual(r, [[0, 1, 2, 3], [], [], []])
-
-    r = get_contraction((4,4,4,4), (16,1,16))
-    self.assertEqual(r, [[0, 1], [], [2, 3]])
-
-    r = get_contraction((1,2,3,4,1,1,1), (2,3,4))
-    self.assertEqual(r, [[0, 1], [2], [3, 4, 5, 6]])
-
-    r = get_contraction((1,2,3,4), (1,2,3,4,1))
-    self.assertEqual(r, [[], [0, 1], [2], [3], []])
-
-    r = get_contraction((14,1,384,14,1,1,1,1), (1,14,384,14))
-    self.assertEqual(r, [[], [0], [1,2], [3,4,5,6,7]])
-
-    r = get_contraction((14,1,384,1,14,1,1,1,1), (1,14,384,14))
-    self.assertEqual(r, [[], [0], [1,2], [3,4,5,6,7,8]])
-
-    r = get_contraction((512, 512), (1, 1, 512, 1, 1, 1, 1, 512))
-    self.assertEqual(r, [[], [], [0], [], [], [], [], [1]])
-
-    r = get_contraction((1,2,3,4), (1,2,6,2))
-    self.assertEqual(r, None)
-
-  def test_contraction_ones(self):
-    r = get_contraction((1,), (1,1,1))
-    self.assertEqual(r, [[], [], [0]])
-
-    r = get_contraction((1,1), (1,1,1))
-    self.assertEqual(r, [[], [], [0, 1]])
-
-    r = get_contraction((1,1,1,1), (1,))
-    self.assertEqual(r, [[0,1,2,3]])
-
-    r = get_contraction((1,1,1,1), (1,1))
-    self.assertEqual(r, [[], [0,1,2,3]])
-
-    r = get_contraction((1,1,1,1), (1,1,1))
-    self.assertEqual(r, [[], [], [0,1,2,3]])
-
-    r = get_contraction((1,1,1,1), (1,1,1,1))
-    self.assertEqual(r, [[], [], [], [0,1,2,3]])
-
-class TestGetShape(unittest.TestCase):
-  def test_get_shape(self):
-    assert get_shape(2) == ()
-    assert get_shape([]) == (0,)
-    assert get_shape([[]]) == (1, 0)
-    assert get_shape([[1, 2]]) == (1, 2)
-    assert get_shape([[1, 2], (3, 4)]) == (2, 2)
-
-  def test_inhomogeneous_shape(self):
-    with self.assertRaises(ValueError): get_shape([[], [1]])
-    with self.assertRaises(ValueError): get_shape([[1, [2]], [1]])
 
 if __name__ == '__main__':
   unittest.main()

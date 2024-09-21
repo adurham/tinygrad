@@ -1,88 +1,78 @@
 import time
-start = time.perf_counter()
 from pathlib import Path
 import numpy as np
-from tinygrad import Tensor, Device, dtypes, GlobalCounters, TinyJit
-from tinygrad.nn.state import get_parameters, load_state_dict, safe_load
-from tinygrad.helpers import getenv
-def tlog(x): print(f"{x:25s}  @ {time.perf_counter()-start:5.2f}s")
+from tinygrad.tensor import Tensor
+from tinygrad.jit import TinyJit
+from tinygrad.helpers import getenv, dtypes, GlobalCounters
+from examples.mlperf import helpers
 
 def eval_resnet():
-  Tensor.no_grad = True
   # Resnet50-v1.5
-  from extra.models.resnet import ResNet50
-  tlog("imports")
-  GPUS = [f'{Device.DEFAULT}:{i}' for i in range(getenv("GPUS", 6))]
-  for x in GPUS: Device[x]
-  tlog("got devices")    # NOTE: this is faster with rocm-smi running
+  from tinygrad.jit import TinyJit
+  from models.resnet import ResNet50
+  mdl = ResNet50()
+  mdl.load_from_pretrained()
 
-  class ResnetRunner:
-    def __init__(self, device=None):
-      self.mdl = ResNet50()
-      for x in get_parameters(self.mdl) if device else []: x.to_(device)
-      if (fn:=getenv("RESNET_MODEL", "")): load_state_dict(self.mdl, safe_load(fn))
-      else: self.mdl.load_from_pretrained()
-      self.input_mean = Tensor([0.485, 0.456, 0.406], device=device).reshape(1, -1, 1, 1)
-      self.input_std = Tensor([0.229, 0.224, 0.225], device=device).reshape(1, -1, 1, 1)
-    def __call__(self, x:Tensor) -> Tensor:
-      x = x.permute([0,3,1,2]).cast(dtypes.float32) / 255.0
-      x -= self.input_mean
-      x /= self.input_std
-      return self.mdl(x).log_softmax().argmax(axis=1).realize()
+  input_mean = Tensor([0.485, 0.456, 0.406]).reshape(1, -1, 1, 1)
+  input_std = Tensor([0.229, 0.224, 0.225]).reshape(1, -1, 1, 1)
+  def input_fixup(x):
+    x = x.permute([0,3,1,2]).cast(dtypes.float32) / 255.0
+    x -= input_mean
+    x /= input_std
+    return x
 
-  mdl = TinyJit(ResnetRunner(GPUS))
-  tlog("loaded models")
+  mdlrun = lambda x: mdl(input_fixup(x)).realize()
+  mdljit = TinyJit(mdlrun)
 
   # evaluation on the mlperf classes of the validation set from imagenet
-  from examples.mlperf.dataloader import batch_load_resnet
-  iterator = batch_load_resnet(getenv("BS", 128*6), val=getenv("VAL", 1), shuffle=False, pad_first_batch=True)
-  def data_get():
-    x,y,cookie = next(iterator)
-    return x.shard(GPUS, axis=0).realize(), y, cookie
+  from extra.datasets.imagenet import iterate
+  from extra.helpers import cross_process
+
+  BS = 64
   n,d = 0,0
-  proc = data_get()
-  tlog("loaded initial data")
   st = time.perf_counter()
-  while proc is not None:
+  iterator = cross_process(lambda: iterate(BS))
+  x,ny = next(iterator)
+  dat = Tensor(x)
+  while dat is not None:
+    y = ny
     GlobalCounters.reset()
-    proc = (mdl(proc[0]), proc[1], proc[2])  # this frees the images
-    run = time.perf_counter()
-    # load the next data here
-    try: next_proc = data_get()
-    except StopIteration: next_proc = None
-    nd = time.perf_counter()
-    y = np.array(proc[1])
-    proc = (proc[0].numpy() == y) & (y != -1)  # this realizes the models and frees the cookies
-    n += proc.sum()
-    d += (y != -1).sum()
+    mt = time.perf_counter()
+    outs = mdlrun(dat) if dat.shape[0] != BS else mdljit(dat)
+    try:
+      x,ny = next(iterator)
+      dat = Tensor(x)
+    except StopIteration:
+      dat = None
+    t = outs.argmax(axis=1).numpy()
     et = time.perf_counter()
-    tlog(f"****** {n:5d}/{d:5d}  {n*100.0/d:.2f}% -- {(run-st)*1000:7.2f} ms to enqueue, {(et-run)*1000:7.2f} ms to realize ({(nd-run)*1000:7.2f} ms fetching). {(len(proc))/(et-st):8.2f} examples/sec. {GlobalCounters.global_ops*1e-12/(et-st):5.2f} TFLOPS")
-    st = et
-    proc, next_proc = next_proc, None
-  tlog("done")
+    n += (t==y).sum()
+    d += len(t)
+    print(f"****** {n}/{d}  {n*100.0/d:.2f}% -- {(mt-st)*1000:.2f} ms loading data, {(et-mt)*1000:7.2f} ms to run model. {len(t)/(et-mt):.2f} examples/sec. {GlobalCounters.global_ops*1e-12/(et-mt):.2f} TFLOPS")
+    st = time.perf_counter()
 
 def eval_unet3d():
   # UNet3D
-  from extra.models.unet3d import UNet3D
-  from extra.datasets.kits19 import iterate, sliding_window_inference, get_val_files
-  from examples.mlperf.metrics import dice_score
+  from models.unet3d import UNet3D
+  from extra.datasets.kits19 import iterate, sliding_window_inference
+  from examples.mlperf.metrics import get_dice_score
   mdl = UNet3D()
   mdl.load_from_pretrained()
   s = 0
   st = time.perf_counter()
-  for i, (image, label) in enumerate(iterate(get_val_files()), start=1):
+  for i, (image, label) in enumerate(iterate(), start=1):
     mt = time.perf_counter()
     pred, label = sliding_window_inference(mdl, image, label)
     et = time.perf_counter()
     print(f"{(mt-st)*1000:.2f} ms loading data, {(et-mt)*1000:.2f} ms to run model")
-    s += dice_score(Tensor(pred), Tensor(label)).mean().item()
+    s += get_dice_score(pred, label).mean()
     print(f"****** {s:.2f}/{i}  {s/i:.5f} Mean DICE score")
     st = time.perf_counter()
 
 def eval_retinanet():
   # RetinaNet with ResNeXt50_32X4D
-  from extra.models.resnet import ResNeXt50_32X4D
-  from extra.models.retinanet import RetinaNet
+  from models.resnet import ResNeXt50_32X4D
+  from models.retinanet import RetinaNet
   mdl = RetinaNet(ResNeXt50_32X4D())
   mdl.load_from_pretrained()
 
@@ -98,11 +88,11 @@ def eval_retinanet():
   from pycocotools.coco import COCO
   from pycocotools.cocoeval import COCOeval
   from contextlib import redirect_stdout
-  coco = COCO(openimages('validation'))
+  coco = COCO(openimages())
   coco_eval = COCOeval(coco, iouType="bbox")
   coco_evalimgs, evaluated_imgs, ncats, narea = [], [], len(coco_eval.params.catIds), len(coco_eval.params.areaRng)
 
-  from tinygrad.engine.jit import TinyJit
+  from tinygrad.jit import TinyJit
   mdlrun = TinyJit(lambda x: mdl(input_fixup(x)).realize())
 
   n, bs = 0, 8
@@ -121,7 +111,7 @@ def eval_retinanet():
     n += len(targets)
     print(f"[{n}/{len(coco.imgs)}] == {(mt-st)*1000:.2f} ms loading data, {(et-mt)*1000:.2f} ms to run model, {(ext-et)*1000:.2f} ms for postprocessing")
     img_ids = [t["image_id"] for t in targets]
-    coco_results  = [{"image_id": targets[i]["image_id"], "category_id": label, "bbox": box.tolist(), "score": score}
+    coco_results  = [{"image_id": targets[i]["image_id"], "category_id": label, "bbox": box, "score": score}
       for i, prediction in enumerate(predictions) for box, score, label in zip(*prediction.values())]
     with redirect_stdout(None):
       coco_eval.cocoDt = coco.loadRes(coco_results)
@@ -139,7 +129,7 @@ def eval_retinanet():
 
 def eval_rnnt():
   # RNN-T
-  from extra.models.rnnt import RNNT
+  from models.rnnt import RNNT
   mdl = RNNT()
   mdl.load_from_pretrained()
 
@@ -168,7 +158,7 @@ def eval_rnnt():
 
 def eval_bert():
   # Bert-QA
-  from extra.models.bert import BertForQuestionAnswering
+  from models.bert import BertForQuestionAnswering
   mdl = BertForQuestionAnswering()
   mdl.load_from_pretrained()
 
@@ -204,8 +194,8 @@ def eval_bert():
 
 def eval_mrcnn():
   from tqdm import tqdm
-  from extra.models.mask_rcnn import MaskRCNN
-  from extra.models.resnet import ResNet
+  from models.mask_rcnn import MaskRCNN
+  from models.resnet import ResNet
   from extra.datasets.coco import BASEDIR, images, convert_prediction_to_coco_bbox, convert_prediction_to_coco_mask, accumulate_predictions_for_coco, evaluate_predictions_on_coco, iterate
   from examples.mask_rcnn import compute_prediction_batched, Image
   mdl = MaskRCNN(ResNet(50, num_classes=None, stride_in_1x1=True))

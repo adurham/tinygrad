@@ -1,11 +1,10 @@
 import unittest
-from typing import Any, Tuple
 from onnx.backend.base import Backend, BackendRep
 import onnx.backend.test
 import numpy as np
-from tinygrad import Tensor, Device, dtypes
-from tinygrad.helpers import getenv, OSX
-from test.helpers import is_dtype_supported
+from tinygrad.tensor import Tensor
+from typing import Any, Tuple
+from tinygrad.helpers import getenv, CI
 
 # pip3 install tabulate
 pytest_plugins = 'onnx.backend.test.report',
@@ -19,7 +18,7 @@ class TinygradModel(BackendRep):
     self.input_names = input_names
 
   def run(self, inputs: Any, **kwargs: Any) -> Tuple[Any, ...]:
-    real_inputs = dict(zip(self.input_names, inputs))
+    real_inputs = {k:v for k,v in zip(self.input_names, inputs)}
     ret = self.fxn(real_inputs, debug=True)
     return tuple(x.numpy() if isinstance(x, Tensor) else [i.numpy() for i in x] if isinstance(x, list) else np.array(x) for x in ret.values())
 
@@ -35,46 +34,40 @@ class TinygradBackend(Backend):
 
   @classmethod
   def supports_device(cls, device: str) -> bool:
-    # NOTE: this is onnx CPU
     return device == "CPU"
 
 backend_test = onnx.backend.test.BackendTest(TinygradBackend, __name__)
+
+# no support for reduce with multiply (needs llop)
+backend_test.exclude('test_reduce_prod_*')
 
 # TODO figure out why it's returning wrong values, geohotstan's uneducated guess is it's due to imprecision from float64 (double) -> float32
 # see Type Constraints: https://onnx.ai/onnx/operators/onnx_aionnxpreviewtraining_Adam.html#type-constraints
 backend_test.exclude('test_adam_multiple_cpu')
 backend_test.exclude('test_nesterov_momentum_cpu')
 
-# about different dtypes
-if not is_dtype_supported(dtypes.float64):
-  backend_test.exclude('float64')
-  backend_test.exclude('DOUBLE')
-  # these have float64 inputs
-  backend_test.exclude('test_eyelike_with_dtype_cpu')
-  backend_test.exclude('test_reduce_log_sum_exp*')
-  backend_test.exclude('test_operator_add*')
-  backend_test.exclude('test_einsum_*')
-  backend_test.exclude('test_cumsum_*')
-
-if not is_dtype_supported(dtypes.float16):
-  backend_test.exclude('float16')
-  backend_test.exclude('FLOAT16')
-
-# dtype cast
-backend_test.exclude('STRING')
-backend_test.exclude('FLOAT8')
-backend_test.exclude('INT4')
-backend_test.exclude('UINT4')
-backend_test.exclude('BFLOAT16')  # not supported in numpy
-# TODO: fix these with true onnx float16
-backend_test.exclude('to_FLOAT16')
-backend_test.exclude('cast_no_saturate')
+# we only support float32
+backend_test.exclude('uint8')
+backend_test.exclude('uint16')
+backend_test.exclude('uint32')
+backend_test.exclude('uint64')
+backend_test.exclude('int8')
+backend_test.exclude('int16')
+backend_test.exclude('float64')
+backend_test.exclude('string')
 
 backend_test.exclude('test_pow_types_int*')
+backend_test.exclude('test_cast_*')
+backend_test.exclude('test_castlike_*')
 backend_test.exclude('test_convinteger_*')
 backend_test.exclude('test_matmulinteger_*')
 
+backend_test.exclude('test_reduce_log_sum_exp*') # dependent on actual float64 implementation for backends
+backend_test.exclude('test_operator_add*') # dependent on float64 math. Without it values default to 0 or inf
+
 # we don't support indexes
+# backend_test.exclude('test_argmax_*') # Needs more work: select_last_index
+# backend_test.exclude('test_argmin_*') # Needs more work: select_last_index
 backend_test.exclude('test_nonzero_*')
 
 # no support for mod
@@ -82,11 +75,6 @@ backend_test.exclude('test_mod_*')
 
 # no boolean ops (2d, 3d, 4d)
 backend_test.exclude('test_bitshift_*')
-
-# no string ops
-backend_test.exclude('string')
-backend_test.exclude('test_strnorm_*')
-backend_test.exclude('test_regex_*')
 
 # no scatternd gathernd
 backend_test.exclude('test_gathernd_*')
@@ -105,29 +93,28 @@ backend_test.exclude('test_lstm_*')
 backend_test.exclude('test_simple_rnn_*')
 
 # no control flow
-# control flow uses AttributeProto.GRAPH
 backend_test.exclude('test_if_*')
 backend_test.exclude('test_loop*')
 backend_test.exclude('test_range_float_type_positive_delta_expanded_cpu') # requires loop
-backend_test.exclude('test_affine_grid_2d_align_corners_expanded_cpu')
-backend_test.exclude('test_affine_grid_2d_expanded_cpu')
-backend_test.exclude('test_affine_grid_3d_align_corners_expanded_cpu')
-backend_test.exclude('test_affine_grid_3d_expanded_cpu')
-backend_test.exclude('test_range_int32_type_negative_delta_expanded_cpu')
 
 # unsupported (strange) ops
 backend_test.exclude('test_bitwise_*')
 backend_test.exclude('test_blackmanwindow_*')
 backend_test.exclude('test_bernoulli_*')
+backend_test.exclude('test_cumsum_*')
 backend_test.exclude('test_det_*')
+
+backend_test.exclude('test_tril_zero_cpu') # TODO: zero array support
+backend_test.exclude('test_triu_zero_cpu') # TODO: zero array support
+
 backend_test.exclude('test_col2im_*')
 backend_test.exclude('test_hammingwindow_*')
 backend_test.exclude('test_hannwindow_*')
 backend_test.exclude('test_hardmax_*')
 backend_test.exclude('test_gridsample_*')
 backend_test.exclude('test_dft_*')
-backend_test.exclude('test_einsum_batch_diagonal_cpu*') # TODO: equation = '...ii ->...i'
-backend_test.exclude('test_einsum_inner_prod_cpu*') # TODO: equation = 'i,i'
+backend_test.exclude('test_einsum_*')
+backend_test.exclude('test_strnorm_*')
 backend_test.exclude('test_unique_*')
 backend_test.exclude('test_sequence_*')
 backend_test.exclude('test_nonmaxsuppression_*')
@@ -142,31 +129,61 @@ backend_test.exclude('test_melweightmatrix_*')
 backend_test.exclude('test_basic_deform_conv_*')
 backend_test.exclude('test_deform_conv_*')
 backend_test.exclude('test_lppool_*')
+backend_test.exclude('test_depthtospace_*')
+backend_test.exclude('test_spacetodepth_*')
 backend_test.exclude('test_scan*')
 backend_test.exclude('test_split_to_sequence_*')
 backend_test.exclude('test_resize_downsample_scales_cubic_*') # unsure how to implement cubic
 backend_test.exclude('test_resize_downsample_sizes_cubic_*') # unsure how to implement cubic
 backend_test.exclude('test_resize_upsample_scales_cubic_*') # unsure how to implement cubic
 backend_test.exclude('test_resize_upsample_sizes_cubic_*') # unsure how to implement cubic
-backend_test.exclude('test_ai_onnx_ml_tree_ensemble_*') # https://github.com/onnx/onnx/blob/main/onnx/reference/ops/aionnxml/op_tree_ensemble.py#L121
 
 # rest of the failing tests
+backend_test.exclude('test_averagepool_2d_dilations_cpu') # dilations != 1 not supported for avgpool
+backend_test.exclude('test_convtranspose_autopad_same_cpu') # TODO geohotstan has no idea how this is done, autopad requires output_shape but output_shape requires pads from autopad
+backend_test.exclude('test_optional_has_element_empty_optional_input_cpu') # Attempts to create Tensor from None
+backend_test.exclude('test_range_int32_type_negative_delta_expanded_cpu') # AttributeProto.GRAPH not implemented
+backend_test.exclude('test_reshape_allowzero_reordered_cpu') # reshaping to 0 shape
 backend_test.exclude('test_resize_downsample_scales_linear_antialias_cpu') # antialias not implemented
 backend_test.exclude('test_resize_downsample_sizes_linear_antialias_cpu') # antialias not implemented
 backend_test.exclude('test_resize_tf_crop_and_resize_cpu') # unsure about fill value after clip
-backend_test.exclude('test_ai_onnx_ml_label_encoder_tensor_value_only_mapping_cpu') # bad data type string
-backend_test.exclude('test_ai_onnx_ml_label_encoder_tensor_mapping_cpu') # bad data type string
-backend_test.exclude('test_group_normalization_*') # numerical inaccuracy problem. Current Group Normalization OP fails test
+backend_test.exclude('test_operator_addconstant_cpu') # bad data type
 
-if Device.DEFAULT in ['GPU', 'METAL']:
-  backend_test.exclude('test_resize_upsample_sizes_nearest_axes_2_3_cpu')
-  backend_test.exclude('test_resize_upsample_sizes_nearest_axes_3_2_cpu')
-  backend_test.exclude('test_resize_upsample_sizes_nearest_cpu')
+# issue 1556 https://github.com/tinygrad/tinygrad/issues/1556
+backend_test.exclude('test_isinf_cpu')
+backend_test.exclude('test_isinf_negative_cpu')
+backend_test.exclude('test_isinf_positive_cpu')
+backend_test.exclude('test_isnan_cpu')
 
-if Device.DEFAULT == "METAL" or (OSX and Device.DEFAULT == "GPU"):
-  # numerical inaccuracy
-  backend_test.exclude('test_mish_cpu')
-  backend_test.exclude('test_mish_expanded_cpu')
+# issue 1791 fast math messes with these https://github.com/tinygrad/tinygrad/issues/1791
+backend_test.exclude('test_resize_upsample_sizes_nearest_axes_2_3_cpu')
+backend_test.exclude('test_resize_upsample_sizes_nearest_axes_3_2_cpu')
+backend_test.exclude('test_resize_upsample_sizes_nearest_cpu')
+
+# issue 2067 potentially also a fastmath issue https://github.com/tinygrad/tinygrad/issues/2067
+if getenv('METAL'):
+  backend_test.exclude('test_maxpool_2d_pads_cpu')
+  backend_test.exclude('test_maxpool_2d_same_lower_cpu')
+
+# Don't know how to treat special TensorProto like TensorProto.FLOAT8E4M3FN
+if getenv("CPU") or getenv("TORCH"):
+  backend_test.exclude('test_dequantizelinear_axis_cpu')
+  backend_test.exclude('test_dequantizelinear_cpu')
+
+# compiled backends cannot reshape to and from 0
+if getenv('LLVM') or getenv('GPU') or getenv('CLANG') or getenv('METAL') or getenv('CUDA'):
+  backend_test.exclude('test_slice_start_out_of_bounds_cpu')
+  backend_test.exclude('test_constantofshape_int_shape_zero_cpu')
+
+if getenv('GPU') or getenv('METAL'):
+  backend_test.exclude('test_mish_cpu') # weird inaccuracy
+  backend_test.exclude('test_mish_expanded_cpu') # weird inaccuracy
+  backend_test.exclude('test_eyelike_with_dtype_cpu') # backend does not support dtype: Double
+
+# Segfaults in CI
+if (getenv('LLVM') or getenv('CUDA')) and CI:
+  backend_test.exclude('test_max_float16_cpu')
+  backend_test.exclude('test_min_float16_cpu')
 
 # disable model tests for now since they are slow
 if not getenv("MODELTESTS"):
